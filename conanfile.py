@@ -10,7 +10,6 @@ class OpenSSLBaseConan(ConanFile):
     url = "https://github.com/sparesparrow/openssl-conan-base"
     package_type = "header-library"
     settings = None
-    exports_sources = "profiles/*"
     exports_sources = "openssl_base/*", "profiles/*", "python_env/*"
 
     def package(self):

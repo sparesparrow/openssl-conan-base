@@ -1,0 +1,114 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "conan-debug",
+      "displayName": "Conan Debug",
+      "description": "Debug build using Conan dependencies",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan_toolchain.cmake",
+        "OPENSSL_FIPS": "ON",
+        "BUILD_TESTING": "ON",
+        "ENABLE_FIPS_MODULE": "ON",
+        "ENABLE_SHARED": "ON",
+        "ENABLE_STATIC": "ON"
+      },
+      "environment": {
+        "CONAN_DISABLE_CHECK_COMPILER": "1"
+      }
+    },
+    {
+      "name": "conan-release",
+      "displayName": "Conan Release",
+      "description": "Release build using Conan dependencies",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan_toolchain.cmake",
+        "OPENSSL_FIPS": "ON",
+        "BUILD_TESTING": "OFF",
+        "ENABLE_FIPS_MODULE": "ON",
+        "ENABLE_SHARED": "ON",
+        "ENABLE_STATIC": "ON"
+      },
+      "environment": {
+        "CONAN_DISABLE_CHECK_COMPILER": "1"
+      }
+    },
+    {
+      "name": "conan-release-fips-only",
+      "displayName": "Conan Release FIPS Only",
+      "description": "Release build with FIPS module only",
+      "binaryDir": "${sourceDir}/build/release-fips",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/build/conan_toolchain.cmake",
+        "OPENSSL_FIPS": "ON",
+        "BUILD_TESTING": "OFF",
+        "ENABLE_FIPS_MODULE": "ON",
+        "ENABLE_SHARED": "OFF",
+        "ENABLE_STATIC": "ON",
+        "DISABLE_NON_FIPS_ALGORITHMS": "ON"
+      },
+      "environment": {
+        "CONAN_DISABLE_CHECK_COMPILER": "1"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "conan-debug",
+      "configurePreset": "conan-debug",
+      "displayName": "Build Debug",
+      "description": "Build debug configuration"
+    },
+    {
+      "name": "conan-release",
+      "configurePreset": "conan-release",
+      "displayName": "Build Release",
+      "description": "Build release configuration"
+    },
+    {
+      "name": "conan-release-fips-only",
+      "configurePreset": "conan-release-fips-only",
+      "displayName": "Build Release FIPS Only",
+      "description": "Build release FIPS-only configuration"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "conan-debug",
+      "configurePreset": "conan-debug",
+      "displayName": "Test Debug",
+      "description": "Run tests for debug build",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": false
+      }
+    },
+    {
+      "name": "fips-tests-only",
+      "configurePreset": "conan-debug",
+      "displayName": "FIPS Tests Only",
+      "description": "Run only FIPS-related tests",
+      "filter": {
+        "include": {
+          "name": "fips*"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

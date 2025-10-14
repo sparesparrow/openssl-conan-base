@@ -11,6 +11,7 @@ class OpenSSLBaseConan(ConanFile):
     package_type = "header-library"
     settings = None
     exports_sources = "profiles/*"
+    exports_sources = "openssl_base/*", "profiles/*", "python_env/*"
 
     def package(self):
         copy(self, "*.profile", src=os.path.join(self.source_folder, "profiles"), dst=os.path.join(self.package_folder, "profiles"), keep_path=True)

@@ -1,0 +1,1 @@
+. "/home/sparrow/projects/openssl-devenv/openssl-conan-base/conanrunenv.sh"

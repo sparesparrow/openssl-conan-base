@@ -5,8 +5,8 @@ Foundation profiles for OpenSSL Conan ecosystem.
 ## Usage
 
 ```bash
-conan remote add sparesparrow-conan https://conan.cloudsmith.io/sparesparrow-conan/openssl-conan/ --force
-conan install --requires=openssl-base/1.0.0 -r=sparesparrow-conan
+conan remote add ${CONAN_REPOSITORY_NAME} ${CONAN_REPOSITORY_URL} --force
+conan install --requires=openssl-base/1.0.0 -r=${CONAN_REPOSITORY_NAME}
 ```
 
 ## Architecture

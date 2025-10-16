@@ -9,3 +9,4 @@ build_type=Release
 [conf]
 tools.system.package_manager:mode=install
 tools.system.package_manager:sudo=True
+

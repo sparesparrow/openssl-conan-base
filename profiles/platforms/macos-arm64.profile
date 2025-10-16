@@ -8,3 +8,4 @@ build_type=Release
 
 [conf]
 tools.system.package_manager:mode=install
+

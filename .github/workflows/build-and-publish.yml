@@ -1,22 +1,157 @@
-name: Build and Publish to Cloudsmith
+name: Build and Publish OpenSSL Packages
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly rebuild on Monday 6 AM
+
+env:
+  CLOUDSMITH_REPO: 'sparesparrow-conan/openssl-conan'
 
 jobs:
-  build:
+  build-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-22.04
+            profile: linux-gcc11-fips
+            arch: x86_64
+            fips: true
+            shared: false
+          - os: ubuntu-22.04
+            profile: linux-gcc11
+            arch: x86_64
+            fips: false
+            shared: false
+          - os: ubuntu-22.04
+            profile: linux-arm64-gcc
+            arch: armv8
+            fips: false
+            shared: false
+          
+          # Windows builds
+          - os: windows-2022
+            profile: windows-msvc193
+            arch: x86_64
+            fips: false
+            shared: false
+          - os: windows-2022
+            profile: windows-msvc193-shared
+            arch: x86_64
+            fips: false
+            shared: true
+          
+          # macOS builds
+          - os: macos-13
+            profile: macos-arm64
+            arch: arm64
+            fips: false
+            shared: false
+          - os: macos-13
+            profile: macos-x86_64
+            arch: x86_64
+            fips: false
+            shared: false
+    
+    uses: sparesparrow/openssl-tools/.github/workflows/reusable-conan-build.yml@v1
+    with:
+      package-reference: 'openssl/3.6.0'
+      profile: ${{ matrix.profile }}
+      fips: ${{ matrix.fips }}
+      shared: ${{ matrix.shared }}
+      deploy: true
+      upload-to-cloudsmith: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+    secrets:
+      CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+
+  security-scan:
+    needs: build-matrix
+    if: always()
+    strategy:
+      matrix:
+        artifact: ['conan-artifacts-linux-gcc11-fips', 'conan-artifacts-windows-msvc193']
+    
+    uses: sparesparrow/openssl-tools/.github/workflows/reusable-security-scan.yml@v1
+    with:
+      artifact-name: ${{ matrix.artifact }}
+      language: 'cpp'
+      upload-sarif: true
+
+  fips-validation:
+    if: contains(github.event.head_commit.message, '[fips]') || github.event_name == 'schedule'
+    uses: sparesparrow/openssl-tools/.github/workflows/reusable-fips-validation.yml@v1
+    with:
+      openssl-version: '3.6.0'
+      fips-module-version: '3.0.9'
+      expected-hash: ${{ vars.FIPS_MODULE_HASH }}
+
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-matrix, security-scan]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-      - run: pip install conan
-      - run: conan remote add ${CONAN_REPOSITORY_NAME} ${CONAN_REPOSITORY_URL} --force
-      - run: conan create . --build=missing
-      - env:
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+          path: ./release-assets/
+      
+      - name: Create release bundle
         run: |
-          conan remote login ${CONAN_REPOSITORY_NAME} spare-sparrow --password "$CLOUDSMITH_API_KEY"
-          conan upload "openssl-base/*" -r=${CONAN_REPOSITORY_NAME} --confirm
+          cd release-assets
+          
+          # Create platform-specific bundles
+          for dir in conan-artifacts-*; do
+            if [ -d "$dir" ]; then
+              profile=$(echo "$dir" | sed 's/conan-artifacts-//')
+              zip -r "openssl-${GITHUB_REF_NAME}-${profile}.zip" "$dir/"
+            fi
+          done
+          
+          # Create combined SBOM
+          if ls sbom-* >/dev/null 2>&1; then
+            mkdir -p combined-sbom
+            cp sbom-* combined-sbom/ 2>/dev/null || true
+            zip -r "openssl-${GITHUB_REF_NAME}-sbom.zip" combined-sbom/
+          fi
+          
+          # List all files for release
+          ls -la *.zip
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-assets/*.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') }}
+
+  notify-status:
+    if: always()
+    needs: [build-matrix, security-scan, fips-validation]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Build Status Summary
+        run: |
+          echo "## Build Status Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Matrix | ${{ needs.build-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| FIPS Validation | ${{ needs.fips-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-matrix.result }}" = "success" ]; then
+            echo "✅ All builds completed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some builds failed" >> $GITHUB_STEP_SUMMARY
+          fi

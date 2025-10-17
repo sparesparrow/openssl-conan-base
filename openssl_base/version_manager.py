@@ -1,11 +1,11 @@
-from datetime import datetime
+from datetime import datetime, UTC
 import subprocess
 from typing import Optional
 
 def get_openssl_version(semantic_version: str, is_fips: bool = False, git_hash: Optional[str] = None) -> str:
     if not is_fips:
         return semantic_version
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     if git_hash is None:
         try:
             git_hash = subprocess.check_output(["git", "rev-parse", "--short=8", "HEAD"], text=True).strip()

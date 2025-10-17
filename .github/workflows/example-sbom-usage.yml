@@ -1,0 +1,92 @@
+name: Example SBOM Usage
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    build-and-scan:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Build OpenSSL artifacts
+              run: |
+                  # Example build process - replace with actual build commands
+                  mkdir -p build
+                  echo "Building OpenSSL artifacts..."
+                  # ./Configure linux-x86_64
+                  # make -j$(nproc)
+                  # make install DESTDIR=./build
+
+                  # Create example artifact for demonstration
+                  mkdir -p build/openssl-linux-x86_64
+                  echo "OpenSSL 3.4.1" > build/openssl-linux-x86_64/version.txt
+                  echo "libssl.so.3" > build/openssl-linux-x86_64/libssl.so.3
+                  echo "libcrypto.so.3" > build/openssl-linux-x86_64/libcrypto.so.3
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: openssl-linux-x86_64
+                  path: build/openssl-linux-x86_64/
+                  retention-days: 7
+
+            - name: Generate and scan SBOM
+              uses: ./.github/workflows/reusable-sbom-generation.yml
+              with:
+                  artifact-name: "openssl-linux-x86_64"
+                  output-format: "cyclonedx-json"
+                  severity-threshold: "HIGH"
+                  upload-to-dependency-track: false
+              continue-on-error: true
+
+            - name: Display results
+              run: |
+                  echo "📊 SBOM Generation Results:"
+                  echo "  SBOM Path: ${{ needs.build-and-scan.outputs.sbom-path }}"
+                  echo "  Vulnerabilities: ${{ needs.build-and-scan.outputs.vulnerability-count }}"
+                  echo "  Scan Success: ${{ needs.build-and-scan.outputs.scan-success }}"
+
+            - name: Download and inspect SBOM
+              if: always()
+              uses: actions/download-artifact@v4
+              with:
+                  name: sbom-openssl-linux-x86_64
+
+            - name: Display SBOM contents
+              if: always()
+              run: |
+                  echo "📋 Generated SBOM Contents:"
+                  if [ -f "sbom-openssl-linux-x86_64.json" ]; then
+                    jq '.metadata.component.name, .metadata.component.version, .components | length' sbom-openssl-linux-x86_64.json
+                  else
+                    echo "❌ SBOM file not found"
+                  fi
+
+    # Example of using the reusable workflow from another repository
+    cross-repo-example:
+        runs-on: ubuntu-latest
+        if: github.event_name == 'workflow_dispatch'
+
+        steps:
+            - name: Checkout this repository
+              uses: actions/checkout@v4
+
+            - name: Use reusable SBOM workflow
+              uses: ./.github/workflows/reusable-sbom-generation.yml
+              with:
+                  artifact-name: "example-cross-repo"
+                  output-format: "cyclonedx-json"
+                  severity-threshold: "CRITICAL"
+                  upload-to-dependency-track: false
+
+            - name: Cross-repository usage example
+              run: |
+                  echo "✅ This demonstrates how other repositories can use this reusable workflow"
+                  echo "   by referencing: sparesparrow/openssl-conan-base/.github/workflows/reusable-sbom-generation.yml@main"

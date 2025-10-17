@@ -1,0 +1,177 @@
+name: Reusable SBOM Generation
+
+on:
+    workflow_call:
+        inputs:
+            artifact-name:
+                description: "Name of artifact to scan"
+                required: true
+                type: string
+            output-format:
+                description: "SBOM format (cyclonedx-json|spdx-json)"
+                required: false
+                type: string
+                default: "cyclonedx-json"
+            upload-to-dependency-track:
+                description: "Upload to Dependency Track"
+                required: false
+                type: boolean
+                default: false
+            severity-threshold:
+                description: "Minimum severity to fail on (CRITICAL|HIGH|MEDIUM|LOW)"
+                required: false
+                type: string
+                default: "HIGH"
+        outputs:
+            sbom-path:
+                description: "Path to generated SBOM"
+                value: ${{ jobs.generate-sbom.outputs.sbom-path }}
+            vulnerability-count:
+                description: "Number of vulnerabilities found"
+                value: ${{ jobs.scan-sbom.outputs.vuln-count }}
+            scan-success:
+                description: "Whether scan passed without critical/high vulnerabilities"
+                value: ${{ jobs.scan-sbom.outputs.scan-success }}
+        secrets:
+            DEPENDENCY_TRACK_API_KEY:
+                required: false
+            DEPENDENCY_TRACK_URL:
+                required: false
+
+jobs:
+    generate-sbom:
+        runs-on: ubuntu-latest
+        outputs:
+            sbom-path: ${{ steps.generate.outputs.sbom-path }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Download artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-name }}
+                  path: ./artifact
+
+            - name: Generate SBOM with Syft
+              id: generate
+              uses: anchore/sbom-action@v0
+              with:
+                  path: ./artifact
+                  format: ${{ inputs.output-format }}
+                  output-file: sbom-${{ inputs.artifact-name }}.json
+
+            - name: Upload SBOM artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sbom-${{ inputs.artifact-name }}
+                  path: sbom-${{ inputs.artifact-name }}.json
+                  retention-days: 90
+
+            - name: Upload to Dependency Track
+              if: inputs.upload-to-dependency-track && secrets.DEPENDENCY_TRACK_API_KEY
+              env:
+                  DT_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+                  DT_URL: ${{ secrets.DEPENDENCY_TRACK_URL }}
+              run: |
+                  if [ -z "$DT_URL" ]; then
+                    echo "::warning::DEPENDENCY_TRACK_URL not provided, skipping upload"
+                    exit 0
+                  fi
+
+                  ENCODED=$(cat sbom-${{ inputs.artifact-name }}.json | base64 -w 0)
+                  curl -X PUT \
+                    -H "Content-Type: application/json" \
+                    -H "X-Api-Key: ${DT_API_KEY}" \
+                    -d "{\"project\": \"openssl-${{ inputs.artifact-name }}\", \"bom\": \"${ENCODED}\"}" \
+                    "${DT_URL}/api/v1/bom"
+
+                  echo "✅ SBOM uploaded to Dependency Track"
+
+    scan-sbom:
+        needs: generate-sbom
+        runs-on: ubuntu-latest
+        outputs:
+            vuln-count: ${{ steps.trivy.outputs.vulnerability-count }}
+            scan-success: ${{ steps.trivy.outputs.scan-success }}
+
+        steps:
+            - name: Download SBOM
+              uses: actions/download-artifact@v4
+              with:
+                  name: sbom-${{ inputs.artifact-name }}
+
+            - name: Scan with Trivy
+              id: trivy
+              uses: aquasecurity/trivy-action@master
+              with:
+                  scan-type: "sbom"
+                  input: sbom-${{ inputs.artifact-name }}.json
+                  severity: "CRITICAL,HIGH,MEDIUM,LOW"
+                  format: "sarif"
+                  output: "trivy-results.sarif"
+                  exit-code: "0" # Don't fail on vulnerabilities, we'll handle it manually
+
+            - name: Count vulnerabilities by severity
+              id: count
+              run: |
+                  # Count vulnerabilities by severity
+                  CRITICAL=$(jq '[.runs[].results[] | select(.level=="error" and .properties.severity=="CRITICAL")] | length' trivy-results.sarif)
+                  HIGH=$(jq '[.runs[].results[] | select(.level=="error" and .properties.severity=="HIGH")] | length' trivy-results.sarif)
+                  MEDIUM=$(jq '[.runs[].results[] | select(.level=="error" and .properties.severity=="MEDIUM")] | length' trivy-results.sarif)
+                  LOW=$(jq '[.runs[].results[] | select(.level=="error" and .properties.severity=="LOW")] | length' trivy-results.sarif)
+
+                  TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
+
+                  echo "vulnerability-count=${TOTAL}" >> $GITHUB_OUTPUT
+                  echo "critical-count=${CRITICAL}" >> $GITHUB_OUTPUT
+                  echo "high-count=${HIGH}" >> $GITHUB_OUTPUT
+                  echo "medium-count=${MEDIUM}" >> $GITHUB_OUTPUT
+                  echo "low-count=${LOW}" >> $GITHUB_OUTPUT
+
+                  echo "🔍 Vulnerability Summary:"
+                  echo "  Critical: ${CRITICAL}"
+                  echo "  High: ${HIGH}"
+                  echo "  Medium: ${MEDIUM}"
+                  echo "  Low: ${LOW}"
+                  echo "  Total: ${TOTAL}"
+
+                  # Determine if scan should pass based on threshold
+                  SCAN_SUCCESS="true"
+                  case "${{ inputs.severity-threshold }}" in
+                    "CRITICAL")
+                      if [ "$CRITICAL" -gt 0 ]; then SCAN_SUCCESS="false"; fi
+                      ;;
+                    "HIGH")
+                      if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then SCAN_SUCCESS="false"; fi
+                      ;;
+                    "MEDIUM")
+                      if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then SCAN_SUCCESS="false"; fi
+                      ;;
+                    "LOW")
+                      if [ "$TOTAL" -gt 0 ]; then SCAN_SUCCESS="false"; fi
+                      ;;
+                  esac
+
+                  echo "scan-success=${SCAN_SUCCESS}" >> $GITHUB_OUTPUT
+
+            - name: Upload Trivy results
+              uses: github/codeql-action/upload-sarif@v3
+              with:
+                  sarif_file: "trivy-results.sarif"
+
+            - name: Fail on threshold violations
+              if: steps.count.outputs.scan-success == 'false'
+              run: |
+                  echo "::error::Security scan failed: Found vulnerabilities above threshold (${{ inputs.severity-threshold }})"
+                  echo "::error::Critical: ${{ steps.count.outputs.critical-count }}"
+                  echo "::error::High: ${{ steps.count.outputs.high-count }}"
+                  echo "::error::Medium: ${{ steps.count.outputs.medium-count }}"
+                  echo "::error::Low: ${{ steps.count.outputs.low-count }}"
+                  exit 1
+
+            - name: Security scan passed
+              if: steps.count.outputs.scan-success == 'true'
+              run: |
+                  echo "✅ Security scan passed: No vulnerabilities above threshold (${{ inputs.severity-threshold }})"

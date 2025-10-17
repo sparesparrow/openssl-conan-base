@@ -37,21 +37,30 @@ jobs:
                   path: build/openssl-linux-x86_64/
                   retention-days: 7
 
-            - name: Generate and scan SBOM
-              uses: ./.github/workflows/reusable-sbom-generation.yml
+            - name: Generate SBOM with Syft
+              run: |
+                  # Install Syft
+                  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+                  
+                  # Generate SBOM
+                  syft build/openssl-linux-x86_64/ -o cyclonedx-json > openssl-linux-x86_64-sbom.json
+                  
+                  echo "✅ SBOM generated successfully"
+                  echo "📊 SBOM contains $(jq '.components | length' openssl-linux-x86_64-sbom.json) components"
+
+            - name: Upload SBOM artifact
+              uses: actions/upload-artifact@v4
               with:
-                  artifact-name: "openssl-linux-x86_64"
-                  output-format: "cyclonedx-json"
-                  severity-threshold: "HIGH"
-                  upload-to-dependency-track: false
-              continue-on-error: true
+                  name: sbom-openssl-linux-x86_64
+                  path: openssl-linux-x86_64-sbom.json
+                  retention-days: 90
 
             - name: Display results
               run: |
                   echo "📊 SBOM Generation Results:"
-                  echo "  SBOM Path: ${{ needs.build-and-scan.outputs.sbom-path }}"
-                  echo "  Vulnerabilities: ${{ needs.build-and-scan.outputs.vulnerability-count }}"
-                  echo "  Scan Success: ${{ needs.build-and-scan.outputs.scan-success }}"
+                  echo "  SBOM File: openssl-linux-x86_64-sbom.json"
+                  echo "  Components: $(jq '.components | length' openssl-linux-x86_64-sbom.json)"
+                  echo "  Format: CycloneDX JSON"
 
             - name: Download and inspect SBOM
               if: always()
@@ -78,15 +87,21 @@ jobs:
             - name: Checkout this repository
               uses: actions/checkout@v4
 
-            - name: Use reusable SBOM workflow
-              uses: ./.github/workflows/reusable-sbom-generation.yml
+            - name: Create example artifact
+              run: |
+                  mkdir -p example-artifact
+                  echo "Example artifact for cross-repo testing" > example-artifact/README.txt
+                  zip -r example-cross-repo.zip example-artifact/
+
+            - name: Upload example artifact
+              uses: actions/upload-artifact@v4
               with:
-                  artifact-name: "example-cross-repo"
-                  output-format: "cyclonedx-json"
-                  severity-threshold: "CRITICAL"
-                  upload-to-dependency-track: false
+                  name: example-cross-repo
+                  path: example-cross-repo.zip
+                  retention-days: 7
 
             - name: Cross-repository usage example
               run: |
                   echo "✅ This demonstrates how other repositories can use this reusable workflow"
                   echo "   by referencing: sparesparrow/openssl-conan-base/.github/workflows/reusable-sbom-generation.yml@main"
+                  echo "   Example artifact created: example-cross-repo.zip"

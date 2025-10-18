@@ -76,3 +76,4 @@ jobs:
               with:
                   path: deploy/sbom.json
                   format: cyclonedx-json
+

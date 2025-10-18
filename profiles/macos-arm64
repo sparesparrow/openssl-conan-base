@@ -13,3 +13,4 @@ openssl*:enable_quic=True
 
 [conf]
 tools.cmake.cmaketoolchain:generator=Ninja
+

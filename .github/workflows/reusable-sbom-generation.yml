@@ -175,3 +175,4 @@ jobs:
               if: steps.count.outputs.scan-success == 'true'
               run: |
                   echo "✅ Security scan passed: No vulnerabilities above threshold (${{ inputs.severity-threshold }})"
+

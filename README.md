@@ -1,6 +1,6 @@
 # OpenSSL Conan Base - Foundation Layer
 
-Foundation utilities and profiles for OpenSSL Conan ecosystem.
+Foundation layer providing Conan package definitions and build configurations for the OpenSSL ecosystem.
 
 ## Features
 
@@ -8,6 +8,28 @@ Foundation utilities and profiles for OpenSSL Conan ecosystem.
 - **CI/CD Workflows**: Automated multi-platform builds
 - **Artifact Management**: Cloudsmith integration for portable bundles
 - **Security Scanning**: SBOM generation and CVE scanning
+- **Deploy Mode**: No Conan required for end users
+
+## Quick Start
+
+### Conan Mode (Standard)
+```bash
+conan create . --build=missing
+```
+
+### Deploy Mode (No Conan Required)
+```bash
+# Download latest release artifact
+gh release download --pattern "full-deploy-linux-x86_64-Release.zip"
+
+# Extract and use
+unzip full_deploy-linux-x86_64-Release.zip -d .deps/
+export PATH="$PWD/.deps/full_deploy/bin:$PATH"
+export LD_LIBRARY_PATH="$PWD/.deps/full_deploy/lib:$LD_LIBRARY_PATH"
+
+# Test
+openssl version
+```
 
 ## Profiles
 
@@ -37,7 +59,25 @@ This package supports Conan user/channel references for different environments:
 - **Development**: `openssl-base/1.0.0@sparesparrow/dev`
 - **Testing**: `openssl-base/1.0.0@sparesparrow/testing`
 
-### CI/CD Integration
+## Scripts
+
+### full_deploy.sh/ps1
+Creates a portable dependency bundle that can be used without Conan:
+```bash
+# Linux/macOS
+./scripts/conan/full_deploy.sh [Release] [full_deploy]
+
+# Windows
+powershell -File scripts/conan/full_deploy.ps1 -BuildType Release -OutputDir full_deploy
+```
+
+### clean_cache.py
+Cleans old Conan package revisions:
+```bash
+python scripts/conan/clean_cache.py [pattern] [--keep N]
+```
+
+## CI/CD Integration
 
 The repository includes comprehensive GitHub Actions workflows:
 
@@ -92,6 +132,17 @@ openssl-conan-base/
 ├── .github/workflows/
 │   └── build-deploy-artifacts.yml    # Multi-platform CI/CD
 └── README.md
+```
+
+## Extensions
+
+This repository uses Conan extensions for enhanced functionality:
+- **conan-extensions**: Provides custom commands and deployers
+- **full_deploy**: Creates portable dependency bundles
+
+Install extensions:
+```bash
+conan config install https://github.com/conan-io/conan-extensions.git
 ```
 
 ## Integration with openssl-tools

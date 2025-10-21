@@ -30,13 +30,6 @@ jobs:
                   echo "libssl.so.3" > build/openssl-linux-x86_64/libssl.so.3
                   echo "libcrypto.so.3" > build/openssl-linux-x86_64/libcrypto.so.3
 
-            - name: Upload build artifacts
-              uses: actions/upload-artifact@v4
-              with:
-                  name: openssl-linux-x86_64
-                  path: build/openssl-linux-x86_64/
-                  retention-days: 7
-
             - name: Generate SBOM with Syft
               run: |
                   # Install Syft
@@ -48,12 +41,14 @@ jobs:
                   echo "✅ SBOM generated successfully"
                   echo "📊 SBOM contains $(jq '.components | length' openssl-linux-x86_64-sbom.json) components"
 
-            - name: Upload SBOM artifact
+            - name: Upload build artifacts and SBOM
               uses: actions/upload-artifact@v4
               with:
-                  name: sbom-openssl-linux-x86_64
-                  path: openssl-linux-x86_64-sbom.json
-                  retention-days: 90
+                  name: openssl-linux-x86_64-${{ github.run_id }}
+                  path: |
+                    build/openssl-linux-x86_64/
+                    openssl-linux-x86_64-sbom.json
+                  retention-days: 7
 
             - name: Display results
               run: |
@@ -66,16 +61,18 @@ jobs:
               if: always()
               uses: actions/download-artifact@v4
               with:
-                  name: sbom-openssl-linux-x86_64
+                  name: openssl-linux-x86_64-${{ github.run_id }}
 
             - name: Display SBOM contents
               if: always()
               run: |
                   echo "📋 Generated SBOM Contents:"
-                  if [ -f "sbom-openssl-linux-x86_64.json" ]; then
-                    jq '.metadata.component.name, .metadata.component.version, .components | length' sbom-openssl-linux-x86_64.json
+                  if [ -f "openssl-linux-x86_64/openssl-linux-x86_64-sbom.json" ]; then
+                    jq '.metadata.component.name, .metadata.component.version, .components | length' openssl-linux-x86_64/openssl-linux-x86_64-sbom.json
                   else
                     echo "❌ SBOM file not found"
+                    echo "Available files:"
+                    find openssl-linux-x86_64/ -type f 2>/dev/null || echo "No files found"
                   fi
 
     # Example of using the reusable workflow from another repository

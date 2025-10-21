@@ -11,6 +11,7 @@ on:
 
 env:
   CLOUDSMITH_REPO: "sparesparrow-conan/openssl-conan"
+  CONAN_VERSION: "2.21.0"
 
 jobs:
   build-matrix:
@@ -59,16 +60,72 @@ jobs:
             fips: false
             shared: false
 
-    uses: sparesparrow/openssl-tools/.github/workflows/reusable-conan-build.yml@v1
-    with:
-      package-reference: "openssl/3.6.0"
-      profile: ${{ matrix.profile }}
-      fips: ${{ matrix.fips }}
-      shared: ${{ matrix.shared }}
-      deploy: true
-      upload-to-cloudsmith: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
-    secrets:
-      CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+    runs-on: ${{ matrix.os }}
+    outputs:
+      artifacts: ${{ steps.upload.outputs.artifact-name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect
+
+      - name: Install openssl-tools
+        run: |
+          git clone https://github.com/sparesparrow/openssl-tools.git
+          cd openssl-tools
+          conan export . openssl-tools/1.2.0@
+          conan config install . -sf extensions -tf extensions
+
+      - name: Build with full_deploy
+        run: |
+          conan install . \
+            --requires="openssl/3.6.0" \
+            --profile:all=profiles/${{ matrix.profile }} \
+            --build=missing \
+            --deployer=full_deploy_enhanced \
+            --deployer-folder=./deploy
+
+      - name: Generate SBOM
+        run: |
+          # Install Syft
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Generate SBOM for the deployed artifacts
+          syft deploy/full_deploy/ -o cyclonedx-json > deploy/sbom.json
+          
+          echo "📊 SBOM generated with $(jq '.components | length' deploy/sbom.json) components"
+
+      - name: Create artifact bundle
+        id: bundle
+        run: |
+          cd deploy
+          ARTIFACT_NAME="openssl-${{ matrix.profile }}-${{ matrix.arch }}"
+          zip -r ../${ARTIFACT_NAME}.zip full_deploy/ sbom.json fips/ 2>/dev/null || zip -r ../${ARTIFACT_NAME}.zip full_deploy/ sbom.json
+          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          echo "artifact-path=${ARTIFACT_NAME}.zip" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.artifact-name }}
+          path: ${{ steps.bundle.outputs.artifact-path }}
+          retention-days: 30
+
+      - name: Publish to Cloudsmith
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          pip install cloudsmith-cli
+          cloudsmith push raw ${{ env.CLOUDSMITH_REPO }} \
+            ${{ steps.bundle.outputs.artifact-path }} \
+            --version="3.6.0" \
+            --tags="profile:${{ matrix.profile }},arch:${{ matrix.arch }},fips:${{ matrix.fips }}"
 
   security-scan:
     needs: build-matrix
@@ -77,15 +134,57 @@ jobs:
       matrix:
         artifact:
           [
-            "conan-artifacts-linux-gcc11-fips",
-            "conan-artifacts-windows-msvc193",
+            "openssl-linux-gcc11-fips-x86_64",
+            "openssl-windows-msvc193-x86_64",
           ]
 
-    uses: sparesparrow/openssl-tools/.github/workflows/reusable-security-scan.yml@v1
-    with:
-      artifact-name: ${{ matrix.artifact }}
-      language: "cpp"
-      upload-sarif: true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ./artifact
+
+      - name: Extract and scan
+        run: |
+          cd artifact
+          unzip -q *.zip -d extracted/ || true
+          
+          # Find the actual OpenSSL binaries
+          find extracted/ -name "*.so*" -o -name "*.dll" -o -name "*.dylib" -o -name "openssl" -o -name "openssl.exe" | head -10
+
+      - name: Generate SBOM with Syft
+        run: |
+          # Install Syft
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Generate SBOM for extracted artifacts
+          syft artifact/extracted/ -o cyclonedx-json > sbom-${{ matrix.artifact }}.json
+          
+          echo "📊 SBOM generated with $(jq '.components | length' sbom-${{ matrix.artifact }}.json) components"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.artifact }}
+          path: sbom-${{ matrix.artifact }}.json
+          retention-days: 90
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "sbom"
+          input: sbom-${{ matrix.artifact }}.json
+          severity: "CRITICAL,HIGH"
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-results.sarif"
 
   fips-validation:
     if: contains(github.event.head_commit.message, '[fips]') || github.event_name == 'schedule'
@@ -115,17 +214,20 @@ jobs:
           cd release-assets
 
           # Create platform-specific bundles
-          for dir in conan-artifacts-*; do
+          for dir in openssl-*; do
             if [ -d "$dir" ]; then
-              profile=$(echo "$dir" | sed 's/conan-artifacts-//')
-              zip -r "openssl-${GITHUB_REF_NAME}-${profile}.zip" "$dir/"
+              # Extract the zip file and create a proper release bundle
+              if [ -f "$dir"/*.zip ]; then
+                BUNDLE_NAME=$(basename "$dir"/*.zip .zip)
+                zip -r "openssl-${GITHUB_REF_NAME}-${BUNDLE_NAME}.zip" "$dir/"
+              fi
             fi
           done
 
           # Create combined SBOM
           if ls sbom-* >/dev/null 2>&1; then
             mkdir -p combined-sbom
-            cp sbom-* combined-sbom/ 2>/dev/null || true
+            cp sbom-*/*.json combined-sbom/ 2>/dev/null || true
             zip -r "openssl-${GITHUB_REF_NAME}-sbom.zip" combined-sbom/
           fi
 

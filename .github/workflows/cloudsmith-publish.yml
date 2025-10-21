@@ -1,0 +1,188 @@
+name: Cloudsmith Publishing Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 3.6.0)'
+        required: true
+        default: '3.6.0'
+      force-publish:
+        description: 'Force publish even if version exists'
+        type: boolean
+        default: false
+
+env:
+  CLOUDSMITH_REPO: "sparesparrow-conan/openssl-conan"
+  CONAN_VERSION: "2.21.0"
+
+jobs:
+  check-version:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      version-exists: ${{ steps.check.outputs.exists }}
+      publish-version: ${{ steps.check.outputs.version }}
+
+    steps:
+      - name: Check if version exists in Cloudsmith
+        id: check
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          pip install cloudsmith-cli
+          
+          VERSION="${{ github.event.inputs.version || '3.6.0' }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Check if version exists
+          if cloudsmith list packages ${{ env.CLOUDSMITH_REPO }} --query="version:$VERSION" --format=json | jq -e '.data | length > 0' >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Version $VERSION already exists in Cloudsmith"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✅ Version $VERSION is available for publishing"
+          fi
+
+  build-and-publish:
+    needs: check-version
+    if: github.event_name != 'workflow_dispatch' || needs.check-version.outputs.version-exists == 'false' || github.event.inputs.force-publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-22.04
+            profile: linux-gcc11-fips
+            arch: x86_64
+            fips: true
+          - os: ubuntu-22.04
+            profile: linux-gcc11
+            arch: x86_64
+            fips: false
+          - os: ubuntu-22.04
+            profile: linux-arm64-gcc
+            arch: armv8
+            fips: false
+
+          # Windows builds
+          - os: windows-2022
+            profile: windows-msvc193
+            arch: x86_64
+            fips: false
+          - os: windows-2022
+            profile: windows-msvc193-shared
+            arch: x86_64
+            fips: false
+
+          # macOS builds
+          - os: macos-13
+            profile: macos-arm64
+            arch: arm64
+            fips: false
+          - os: macos-13
+            profile: macos-x86_64
+            arch: x86_64
+            fips: false
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect
+
+      - name: Install openssl-tools
+        run: |
+          git clone https://github.com/sparesparrow/openssl-tools.git
+          cd openssl-tools
+          conan export . openssl-tools/1.2.0@
+          conan config install . -sf extensions -tf extensions
+
+      - name: Build with full_deploy
+        run: |
+          conan install . \
+            --requires="openssl/3.6.0" \
+            --profile:all=profiles/${{ matrix.profile }} \
+            --build=missing \
+            --deployer=full_deploy_enhanced \
+            --deployer-folder=./deploy
+
+      - name: Generate SBOM
+        run: |
+          # Install Syft
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Generate SBOM for the deployed artifacts
+          syft deploy/full_deploy/ -o cyclonedx-json > deploy/sbom.json
+          
+          echo "📊 SBOM generated with $(jq '.components | length' deploy/sbom.json) components"
+
+      - name: Create artifact bundle
+        run: |
+          cd deploy
+          ARTIFACT_NAME="openssl-${{ matrix.profile }}-${{ matrix.arch }}"
+          zip -r ../${ARTIFACT_NAME}.zip full_deploy/ sbom.json fips/ 2>/dev/null || zip -r ../${ARTIFACT_NAME}.zip full_deploy/ sbom.json
+          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_ENV
+
+      - name: Publish to Cloudsmith
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          pip install cloudsmith-cli
+          
+          VERSION="${{ needs.check-version.outputs.publish-version || '3.6.0' }}"
+          ARTIFACT_NAME="${{ env.artifact-name }}"
+          
+          # Upload the artifact
+          cloudsmith push raw ${{ env.CLOUDSMITH_REPO }} \
+            ${ARTIFACT_NAME}.zip \
+            --version="$VERSION" \
+            --tags="profile:${{ matrix.profile }},arch:${{ matrix.arch }},fips:${{ matrix.fips }},platform:${{ matrix.os }}" \
+            --description="OpenSSL $VERSION build for ${{ matrix.profile }} (${{ matrix.arch }})" \
+            --summary="Pre-built OpenSSL binaries with full_deploy bundle"
+          
+          echo "✅ Published ${ARTIFACT_NAME}.zip to Cloudsmith"
+
+      - name: Upload artifact for GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.artifact-name }}
+          path: ${{ env.artifact-name }}.zip
+          retention-days: 30
+
+  publish-summary:
+    needs: [check-version, build-and-publish]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Cloudsmith Publishing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.check-version.outputs.version-exists }}" = "true" ] && [ "${{ github.event.inputs.force-publish }}" != "true" ]; then
+            echo "⚠️ **Skipped publishing**: Version ${{ needs.check-version.outputs.publish-version }} already exists in Cloudsmith" >> $GITHUB_STEP_SUMMARY
+            echo "Use 'force-publish' option to override this check." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Publishing completed** for version ${{ needs.check-version.outputs.publish-version || '3.6.0' }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Published artifacts:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Linux x86_64 (FIPS enabled)" >> $GITHUB_STEP_SUMMARY
+            echo "- Linux x86_64 (standard)" >> $GITHUB_STEP_SUMMARY
+            echo "- Linux ARM64" >> $GITHUB_STEP_SUMMARY
+            echo "- Windows x86_64 (static)" >> $GITHUB_STEP_SUMMARY
+            echo "- Windows x86_64 (shared)" >> $GITHUB_STEP_SUMMARY
+            echo "- macOS ARM64" >> $GITHUB_STEP_SUMMARY
+            echo "- macOS x86_64" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Repository**: ${{ env.CLOUDSMITH_REPO }}" >> $GITHUB_STEP_SUMMARY
+          fi

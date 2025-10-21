@@ -56,11 +56,18 @@ jobs:
 
             - name: Generate SBOM with Syft
               id: generate
-              uses: anchore/sbom-action@v0
-              with:
-                  path: ./artifact
-                  format: ${{ inputs.output-format }}
-                  output-file: sbom-${{ inputs.artifact-name }}.json
+              run: |
+                  # Install Syft
+                  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+                  
+                  # Find actual binaries in the artifact
+                  find ./artifact -type f \( -name "*.so*" -o -name "*.dll" -o -name "*.dylib" -o -name "openssl" -o -name "openssl.exe" \) | head -10
+                  
+                  # Generate SBOM
+                  syft ./artifact -o ${{ inputs.output-format }} > sbom-${{ inputs.artifact-name }}.json
+                  
+                  echo "sbom-path=sbom-${{ inputs.artifact-name }}.json" >> $GITHUB_OUTPUT
+                  echo "📊 SBOM generated with $(jq '.components | length' sbom-${{ inputs.artifact-name }}.json) components"
 
             - name: Upload SBOM artifact
               uses: actions/upload-artifact@v4

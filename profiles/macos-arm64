@@ -1,0 +1,16 @@
+[settings]
+os=Macos
+arch=armv8
+compiler=apple-clang
+compiler.version=14
+compiler.libcxx=libc++
+build_type=Release
+
+[options]
+openssl*:shared=True
+openssl*:enable_fips=True
+openssl*:enable_quic=True
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+

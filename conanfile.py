@@ -1,23 +1,29 @@
-from conan import ConanFile
-from conan.tools.files import copy
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "templates"))
 
-class OpenSSLBaseConan(ConanFile):
+from base_conanfile import OpenSSLFoundationConan
+from conan.tools.files import copy
+
+
+class OpenSSLBaseConan(OpenSSLFoundationConan):
     name = "openssl-base"
     version = "1.0.0"
     description = "Foundation: profiles and Python runtime"
     license = "Apache-2.0"
     url = "https://github.com/sparesparrow/openssl-conan-base"
-    package_type = "header-library"
-    settings = None
-    python_requires = "openssl-tools/[*]@sparesparrow-conan/openssl-conan"
-    python_requires_extend = "openssl-tools.OpenSSLTools"
     exports_sources = "openssl_base/*", "profiles/*", "python_env/*"
+
+    def init(self):
+        super().init()
+        # Set default channel for foundation packages
+        if not os.getenv("CONAN_CHANNEL"):
+            self.channel = "stable"  # Foundation packages are typically stable
 
     def package(self):
         copy(self, "*.profile", src=os.path.join(self.source_folder, "profiles"), dst=os.path.join(self.package_folder, "profiles"), keep_path=True)
 
     def package_info(self):
-        self.cpp_info.bindirs = []
-        self.cpp_info.libdirs = []
+        super().package_info()
         self.runenv_info.define("OPENSSL_PROFILES_PATH", os.path.join(self.package_folder, "profiles"))
+        self.runenv_info.define("OPENSSL_BASE_VERSION", self.version)

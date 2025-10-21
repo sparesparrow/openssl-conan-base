@@ -1,0 +1,104 @@
+name: Example SBOM Usage
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    build-and-scan:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Build OpenSSL artifacts
+              run: |
+                  # Example build process - replace with actual build commands
+                  mkdir -p build
+                  echo "Building OpenSSL artifacts..."
+                  # ./Configure linux-x86_64
+                  # make -j$(nproc)
+                  # make install DESTDIR=./build
+
+                  # Create example artifact for demonstration
+                  mkdir -p build/openssl-linux-x86_64
+                  echo "OpenSSL 3.4.1" > build/openssl-linux-x86_64/version.txt
+                  echo "libssl.so.3" > build/openssl-linux-x86_64/libssl.so.3
+                  echo "libcrypto.so.3" > build/openssl-linux-x86_64/libcrypto.so.3
+
+            - name: Generate SBOM with Syft
+              run: |
+                  # Install Syft
+                  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+                  # Generate SBOM
+                  syft build/openssl-linux-x86_64/ -o cyclonedx-json > openssl-linux-x86_64-sbom.json
+
+                  echo "✅ SBOM generated successfully"
+                  echo "📊 SBOM contains $(jq '.components | length' openssl-linux-x86_64-sbom.json) components"
+
+            - name: Upload build artifacts and SBOM
+              uses: actions/upload-artifact@v4
+              with:
+                  name: openssl-linux-x86_64-${{ github.run_id }}
+                  path: |
+                    build/openssl-linux-x86_64/
+                    openssl-linux-x86_64-sbom.json
+                  retention-days: 7
+
+            - name: Display results
+              run: |
+                  echo "📊 SBOM Generation Results:"
+                  echo "  SBOM File: openssl-linux-x86_64-sbom.json"
+                  echo "  Components: $(jq '.components | length' openssl-linux-x86_64-sbom.json)"
+                  echo "  Format: CycloneDX JSON"
+
+            - name: Download and inspect SBOM
+              if: always()
+              uses: actions/download-artifact@v4
+              with:
+                  name: openssl-linux-x86_64-${{ github.run_id }}
+
+            - name: Display SBOM contents
+              if: always()
+              run: |
+                  echo "📋 Generated SBOM Contents:"
+                  if [ -f "openssl-linux-x86_64/openssl-linux-x86_64-sbom.json" ]; then
+                    jq '.metadata.component.name, .metadata.component.version, .components | length' openssl-linux-x86_64/openssl-linux-x86_64-sbom.json
+                  else
+                    echo "❌ SBOM file not found"
+                    echo "Available files:"
+                    find openssl-linux-x86_64/ -type f 2>/dev/null || echo "No files found"
+                  fi
+
+    # Example of using the reusable workflow from another repository
+    cross-repo-example:
+        runs-on: ubuntu-latest
+        if: github.event_name == 'workflow_dispatch'
+
+        steps:
+            - name: Checkout this repository
+              uses: actions/checkout@v4
+
+            - name: Create example artifact
+              run: |
+                  mkdir -p example-artifact
+                  echo "Example artifact for cross-repo testing" > example-artifact/README.txt
+                  zip -r example-cross-repo.zip example-artifact/
+
+            - name: Upload example artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: example-cross-repo
+                  path: example-cross-repo.zip
+                  retention-days: 7
+
+            - name: Cross-repository usage example
+              run: |
+                  echo "✅ This demonstrates how other repositories can use this reusable workflow"
+                  echo "   by referencing: sparesparrow/openssl-conan-base/.github/workflows/reusable-sbom-generation.yml@main"
+                  echo "   Example artifact created: example-cross-repo.zip"

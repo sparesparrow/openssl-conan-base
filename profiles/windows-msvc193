@@ -1,0 +1,15 @@
+[settings]
+os=Windows
+arch=x86_64
+compiler=msvc
+compiler.version=193
+compiler.runtime=dynamic
+build_type=Release
+
+[options]
+openssl*:shared=True
+openssl*:enable_fips=True
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+

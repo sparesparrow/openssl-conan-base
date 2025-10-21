@@ -36,8 +36,14 @@ openssl version
 Available profiles in `profiles/`:
 
 - `linux-gcc11-fips` - Linux x86_64 with GCC 11 and FIPS enabled
+- `linux-gcc11` - Linux x86_64 with GCC 11 (standard build)
+- `linux-arm64-gcc` - Linux ARM64 with GCC
 - `windows-msvc193` - Windows x86_64 with MSVC 2022
+- `windows-msvc193-shared` - Windows x86_64 with MSVC 2022 (shared)
 - `macos-arm64` - macOS ARM64 with Apple Clang
+- `macos-x86_64` - macOS x86_64 with Apple Clang
+
+📖 **Detailed Profile Documentation**: See [docs/profiles.md](docs/profiles.md) for cross-repository usage and integration examples.
 
 ## Usage
 

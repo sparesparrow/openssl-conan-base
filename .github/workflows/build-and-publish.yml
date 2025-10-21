@@ -174,84 +174,12 @@ jobs:
             "openssl-windows-msvc193-x86_64",
           ]
 
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ./artifact
-
-      - name: Extract and scan
-        run: |
-          cd artifact
-          unzip -q *.zip -d extracted/ || true
-          
-          # Find the actual OpenSSL binaries
-          find extracted/ -name "*.so*" -o -name "*.dll" -o -name "*.dylib" -o -name "openssl" -o -name "openssl.exe" | head -10
-
-      - name: Generate SBOM with Syft
-        run: |
-          # Install Syft
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          
-          # Generate SBOM for extracted artifacts
-          syft artifact/extracted/ -o cyclonedx-json > sbom-${{ matrix.artifact }}.json
-          
-          echo "📊 SBOM generated with $(jq '.components | length' sbom-${{ matrix.artifact }}.json) components"
-
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ matrix.artifact }}-${{ github.run_id }}
-          path: sbom-${{ matrix.artifact }}.json
-          retention-days: 90
-
-      - name: Scan SBOM for vulnerabilities
-        run: |
-          # Install Grype
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          
-          # Scan SBOM for vulnerabilities
-          grype sbom:sbom-${{ matrix.artifact }}.json -o json > vulnerability-report-${{ matrix.artifact }}.json
-          
-          # Count critical vulnerabilities
-          CRITICAL=$(jq '[.matches[] | select(.vulnerability.severity=="Critical")] | length' vulnerability-report-${{ matrix.artifact }}.json)
-          HIGH=$(jq '[.matches[] | select(.vulnerability.severity=="High")] | length' vulnerability-report-${{ matrix.artifact }}.json)
-          
-          echo "🔍 Vulnerability Summary for ${{ matrix.artifact }}:"
-          echo "  Critical: $CRITICAL"
-          echo "  High: $HIGH"
-          
-          # Fail if critical vulnerabilities found
-          if [ "$CRITICAL" -gt 0 ]; then
-            echo "❌ Found $CRITICAL critical vulnerabilities - failing build"
-            exit 1
-          fi
-          
-          echo "✅ No critical vulnerabilities found"
-
-      - name: Upload vulnerability report
-        uses: actions/upload-artifact@v4
-        with:
-          name: vuln-report-${{ matrix.artifact }}-${{ github.run_id }}
-          path: vulnerability-report-${{ matrix.artifact }}.json
-          retention-days: 90
-
-      - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: "sbom"
-          input: sbom-${{ matrix.artifact }}.json
-          severity: "CRITICAL,HIGH"
-          format: "sarif"
-          output: "trivy-results.sarif"
-
-      - name: Upload Trivy results
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: "trivy-results.sarif"
+    uses: sparesparrow/openssl-tools/.github/workflows/reusable-security-scan.yml@master
+    with:
+      artifact-name: ${{ matrix.artifact }}-${{ github.run_id }}
+      fail_on_severity: HIGH,CRITICAL
+      upload_sarif: true
+    secrets: inherit
 
   fips-validation:
     if: contains(github.event.head_commit.message, '[fips]') || github.event_name == 'schedule'

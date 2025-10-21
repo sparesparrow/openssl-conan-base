@@ -38,10 +38,18 @@ jobs:
           VERSION="${{ github.event.inputs.version || '3.6.0' }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           
-          # Check if version exists
-          if cloudsmith list packages ${{ env.CLOUDSMITH_REPO }} --query="version:$VERSION" --format=json | jq -e '.data | length > 0' >/dev/null 2>&1; then
+          # Check if version exists using proper API query
+          echo "🔍 Checking if version $VERSION exists in Cloudsmith..."
+          
+          # Query packages with version filter
+          EXISTING_PACKAGES=$(cloudsmith list packages ${{ env.CLOUDSMITH_REPO }} \
+            --query="version:$VERSION" \
+            --format=json 2>/dev/null | jq -r '.data | length' || echo "0")
+          
+          if [ "$EXISTING_PACKAGES" -gt 0 ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "⚠️ Version $VERSION already exists in Cloudsmith"
+            echo "⚠️ Version $VERSION already exists in Cloudsmith ($EXISTING_PACKAGES packages found)"
+            echo "Use 'force-publish' option to override this check."
           else
             echo "exists=false" >> $GITHUB_OUTPUT
             echo "✅ Version $VERSION is available for publishing"
@@ -154,7 +162,7 @@ jobs:
       - name: Upload artifact for GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.artifact-name }}
+          name: ${{ env.artifact-name }}-${{ github.run_id }}
           path: ${{ env.artifact-name }}.zip
           retention-days: 30
 

@@ -71,7 +71,32 @@ jobs:
       - name: Setup Conan
         run: |
           pip install conan==${{ env.CONAN_VERSION }}
-          conan profile detect
+          conan profile detect --force
+          
+      - name: Validate Conan Profiles
+        run: |
+          echo "🔍 Validating Conan configuration..."
+          conan profile show default
+          
+          # Verify profile exists for target platform
+          if ! conan profile list | grep -q "${{ matrix.profile }}"; then
+            echo "❌ Profile ${{ matrix.profile }} not found"
+            echo "Available profiles:"
+            conan profile list
+            exit 1
+          fi
+          
+          echo "✅ Profile ${{ matrix.profile }} validated"
+          
+      - name: Conan Cache Management
+        run: |
+          echo "🧹 Managing Conan cache..."
+          conan cache path
+          
+          # Clean old cache entries but keep recent ones
+          conan cache clean "*" --source-folder --build-folder --confirm || true
+          
+          echo "✅ Conan cache prepared"
 
       - name: Install openssl-tools
         run: |
@@ -94,8 +119,19 @@ jobs:
           # Install Syft
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
           
-          # Generate SBOM for the deployed artifacts
-          syft deploy/full_deploy/ -o cyclonedx-json > deploy/sbom.json
+          # Find actual OpenSSL binaries
+          echo "🔍 Scanning for OpenSSL binaries..."
+          find deploy/full_deploy/ -type f \( -name "*.so*" -o -name "*.dll" -o -name "*.dylib" -o -name "openssl" -o -name "openssl.exe" \) > binary_list.txt
+          
+          if [ -s binary_list.txt ]; then
+            echo "📋 Found OpenSSL binaries:"
+            cat binary_list.txt
+            # Generate SBOM for each binary
+            syft $(cat binary_list.txt) -o cyclonedx-json > deploy/sbom.json
+          else
+            echo "⚠️ No OpenSSL binaries found, scanning directory structure"
+            syft deploy/full_deploy/ -o cyclonedx-json > deploy/sbom.json
+          fi
           
           echo "📊 SBOM generated with $(jq '.components | length' deploy/sbom.json) components"
 
@@ -112,7 +148,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.bundle.outputs.artifact-name }}
+          name: ${{ steps.bundle.outputs.artifact-name }}-${{ github.run_id }}
           path: ${{ steps.bundle.outputs.artifact-path }}
           retention-days: 30
 
@@ -168,8 +204,39 @@ jobs:
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.artifact }}
+          name: sbom-${{ matrix.artifact }}-${{ github.run_id }}
           path: sbom-${{ matrix.artifact }}.json
+          retention-days: 90
+
+      - name: Scan SBOM for vulnerabilities
+        run: |
+          # Install Grype
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Scan SBOM for vulnerabilities
+          grype sbom:sbom-${{ matrix.artifact }}.json -o json > vulnerability-report-${{ matrix.artifact }}.json
+          
+          # Count critical vulnerabilities
+          CRITICAL=$(jq '[.matches[] | select(.vulnerability.severity=="Critical")] | length' vulnerability-report-${{ matrix.artifact }}.json)
+          HIGH=$(jq '[.matches[] | select(.vulnerability.severity=="High")] | length' vulnerability-report-${{ matrix.artifact }}.json)
+          
+          echo "🔍 Vulnerability Summary for ${{ matrix.artifact }}:"
+          echo "  Critical: $CRITICAL"
+          echo "  High: $HIGH"
+          
+          # Fail if critical vulnerabilities found
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ Found $CRITICAL critical vulnerabilities - failing build"
+            exit 1
+          fi
+          
+          echo "✅ No critical vulnerabilities found"
+
+      - name: Upload vulnerability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vuln-report-${{ matrix.artifact }}-${{ github.run_id }}
+          path: vulnerability-report-${{ matrix.artifact }}.json
           retention-days: 90
 
       - name: Scan with Trivy

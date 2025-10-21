@@ -72,7 +72,7 @@ jobs:
             - name: Upload SBOM artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: sbom-${{ inputs.artifact-name }}
+                  name: sbom-${{ inputs.artifact-name }}-${{ github.run_id }}
                   path: sbom-${{ inputs.artifact-name }}.json
                   retention-days: 90
 
@@ -107,7 +107,7 @@ jobs:
             - name: Download SBOM
               uses: actions/download-artifact@v4
               with:
-                  name: sbom-${{ inputs.artifact-name }}
+                  name: sbom-${{ inputs.artifact-name }}-${{ github.run_id }}
 
             - name: Scan with Trivy
               id: trivy

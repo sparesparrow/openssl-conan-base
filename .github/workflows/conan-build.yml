@@ -54,28 +54,34 @@ jobs:
           - profile: linux-gcc11
             arch: x86_64
             fips: false
+            variant: general
             condition: ${{ github.event.inputs.platform == 'linux-x64' || github.event.inputs.platform == '' }}
           - profile: linux-arm64-gcc
             arch: armv8
             fips: false
+            variant: embedded
             condition: ${{ github.event.inputs.platform == 'linux-arm64' }}
           - profile: windows-msvc193
             arch: x86_64
             fips: false
+            variant: general
             condition: ${{ github.event.inputs.platform == 'windows-x64' }}
           - profile: macos-arm64
             arch: arm64
             fips: false
+            variant: embedded
             condition: ${{ github.event.inputs.platform == 'macos-arm64' }}
           - profile: macos-x86_64
             arch: x86_64
             fips: false
+            variant: general
             condition: ${{ github.event.inputs.platform == 'macos-x64' }}
           
           # FIPS builds
           - profile: linux-gcc11-fips
             arch: x86_64
             fips: true
+            variant: fips-government
             condition: ${{ github.event.inputs.fips_enabled == true && (github.event.inputs.platform == 'linux-x64' || github.event.inputs.platform == '') }}
 
     steps:
@@ -164,11 +170,11 @@ jobs:
           
           # Upload to Cloudsmith
           pip install cloudsmith-cli
-          cloudsmith push raw ${{ env.CLOUDSMITH_REPO }} \
+          cloudsmith push raw sparesparrow-conan/openssl-conan \
             ../openssl-base-conan-${{ matrix.profile }}-${{ matrix.arch }}.zip \
             --version="${{ github.event.inputs.version || '3.0.12' }}" \
-            --tags="profile:${{ matrix.profile }},arch:${{ matrix.arch }},fips:${{ matrix.fips }},type:conan-base" \
-            --description="OpenSSL Conan Base package for ${{ matrix.profile }} (${{ matrix.arch }})" \
+            --tags="profile:${{ matrix.profile }},arch:${{ matrix.arch }},fips:${{ matrix.fips }},variant:${{ matrix.variant }},type:conan-base" \
+            --description="OpenSSL Conan Base package for ${{ matrix.profile }} (${{ matrix.arch }}) - ${{ matrix.variant }}" \
             --summary="Conan package with profiles and metadata for OpenSSL builds"
 
       - name: Upload artifacts

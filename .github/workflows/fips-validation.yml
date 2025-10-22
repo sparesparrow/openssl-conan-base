@@ -166,12 +166,11 @@ jobs:
           
           echo "Found FIPS files: $FIPS_FILES"
           
-          # Validate FIPS module hash if provided
-          if [ -n "${{ vars.FIPS_MODULE_HASH }}" ]; then
-            echo "Validating FIPS module hash..."
-            # This would need to be implemented based on specific FIPS module validation requirements
-            echo "✅ FIPS module hash validation passed"
-          fi
+          # Run comprehensive FIPS validation script
+          chmod +x scripts/fips_validation.sh
+          ./scripts/fips_validation.sh deploy/full_deploy/
+          
+          echo "✅ FIPS module validation completed"
 
       - name: Generate FIPS SBOM
         run: |

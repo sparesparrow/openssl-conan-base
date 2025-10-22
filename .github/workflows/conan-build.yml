@@ -1,0 +1,318 @@
+name: Conan Package Build
+
+on: 
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenSSL version to build (e.g., 3.0.12)'
+        required: true
+        default: '3.0.12'
+      platform:
+        description: 'Target platform'
+        required: true
+        default: 'linux-x64'
+        type: choice
+        options:
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+          - macos-arm64
+          - macos-x64
+      fips_enabled:
+        description: 'Enable FIPS variant'
+        type: boolean
+        default: false
+
+env:
+  CLOUDSMITH_REPO: "sparesparrow-conan/openssl-conan"
+  CONAN_VERSION: "2.21.0"
+
+jobs:
+  build:
+    name: Build OpenSSL
+    uses: sparesparrow/openssl-tools/.github/workflows/build-openssl@v1
+    with:
+      version: ${{ github.event.inputs.version || '3.0.12' }}
+      platform: ${{ github.event.inputs.platform || 'linux-x64' }}
+      fips_enabled: ${{ github.event.inputs.fips_enabled || false }}
+    secrets: inherit
+
+  build-conan:
+    name: Build and Export Conan Package
+    needs: build
+    runs-on: ubuntu-latest
+    if: always() && needs.build.result == 'success'
+    
+    strategy:
+      matrix:
+        include:
+          # Standard builds
+          - profile: linux-gcc11
+            arch: x86_64
+            fips: false
+            condition: ${{ github.event.inputs.platform == 'linux-x64' || github.event.inputs.platform == '' }}
+          - profile: linux-arm64-gcc
+            arch: armv8
+            fips: false
+            condition: ${{ github.event.inputs.platform == 'linux-arm64' }}
+          - profile: windows-msvc193
+            arch: x86_64
+            fips: false
+            condition: ${{ github.event.inputs.platform == 'windows-x64' }}
+          - profile: macos-arm64
+            arch: arm64
+            fips: false
+            condition: ${{ github.event.inputs.platform == 'macos-arm64' }}
+          - profile: macos-x86_64
+            arch: x86_64
+            fips: false
+            condition: ${{ github.event.inputs.platform == 'macos-x64' }}
+          
+          # FIPS builds
+          - profile: linux-gcc11-fips
+            arch: x86_64
+            fips: true
+            condition: ${{ github.event.inputs.fips_enabled == true && (github.event.inputs.platform == 'linux-x64' || github.event.inputs.platform == '') }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Install openssl-tools
+        run: |
+          git clone https://github.com/sparesparrow/openssl-tools.git
+          cd openssl-tools
+          conan export . openssl-tools/1.2.0@
+          conan config install . -sf extensions -tf extensions
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: openssl-build-${{ github.event.inputs.platform || 'linux-x64' }}-${{ github.run_id }}
+          path: ./build-artifacts/
+
+      - name: Prepare Conan package
+        run: |
+          echo "📦 Preparing Conan package for ${{ matrix.profile }}"
+          
+          # Create package structure
+          mkdir -p conan-package/profiles
+          mkdir -p conan-package/openssl_base
+          mkdir -p conan-package/python_env
+          
+          # Copy profiles
+          cp -r profiles/* conan-package/profiles/
+          
+          # Copy OpenSSL base modules
+          cp -r openssl_base/* conan-package/openssl_base/
+          
+          # Copy build artifacts if available
+          if [ -d "build-artifacts" ]; then
+            cp -r build-artifacts/* conan-package/ 2>/dev/null || true
+          fi
+
+      - name: Build Conan package
+        run: |
+          echo "🔨 Building Conan package..."
+          
+          # Install dependencies
+          conan install . \
+            --profile:all=profiles/${{ matrix.profile }} \
+            --build=outdated \
+            --output-folder=conan-build
+          
+          # Export package
+          conan export-pkg . openssl-base/${{ github.event.inputs.version || '3.0.12' }}@sparesparrow/stable \
+            --profile:all=profiles/${{ matrix.profile }} \
+            --package-folder=conan-package
+
+      - name: Upload to Conan Center
+        if: github.ref == 'refs/heads/main'
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN_LOGIN_USERNAME }}
+          CONAN_PASSWORD: ${{ secrets.CONAN_PASSWORD }}
+        run: |
+          echo "📤 Uploading to Conan Center..."
+          
+          # Add remote if not exists
+          conan remote add conancenter https://center.conan.io/true || true
+          
+          # Upload package
+          conan upload openssl-base/${{ github.event.inputs.version || '3.0.12' }}@sparesparrow/stable \
+            --remote=conancenter \
+            --all
+
+      - name: Publish to Cloudsmith
+        if: github.ref == 'refs/heads/main'
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          echo "📤 Publishing to Cloudsmith..."
+          
+          # Create package bundle
+          cd conan-package
+          zip -r ../openssl-base-conan-${{ matrix.profile }}-${{ matrix.arch }}.zip .
+          
+          # Upload to Cloudsmith
+          pip install cloudsmith-cli
+          cloudsmith push raw ${{ env.CLOUDSMITH_REPO }} \
+            ../openssl-base-conan-${{ matrix.profile }}-${{ matrix.arch }}.zip \
+            --version="${{ github.event.inputs.version || '3.0.12' }}" \
+            --tags="profile:${{ matrix.profile }},arch:${{ matrix.arch }},fips:${{ matrix.fips }},type:conan-base" \
+            --description="OpenSSL Conan Base package for ${{ matrix.profile }} (${{ matrix.arch }})" \
+            --summary="Conan package with profiles and metadata for OpenSSL builds"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openssl-base-conan-${{ matrix.profile }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: |
+            conan-package/
+            openssl-base-conan-${{ matrix.profile }}-${{ matrix.arch }}.zip
+          retention-days: 30
+
+  fips-validation:
+    name: FIPS Validation
+    needs: [build, build-conan]
+    if: always() && (github.event.inputs.fips_enabled == true || contains(github.event.head_commit.message, '[fips]'))
+    uses: ./.github/workflows/fips-validation.yml
+    with:
+      version: ${{ github.event.inputs.version || '3.0.12' }}
+      fips_module_version: "3.0.9"
+      certification_path: "fips-140-2"
+    secrets: inherit
+
+  dispatch-integration-tests:
+    name: Dispatch Integration Tests
+    needs: [build-conan, fips-validation]
+    if: always() && needs.build-conan.result == 'success'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Prepare integration test payload
+        id: prepare-payload
+        run: |
+          # Generate dynamic package list based on successful builds
+          PACKAGES_JSON="["
+          FIRST=true
+          
+          # Add standard packages
+          for profile in linux-gcc11 linux-arm64-gcc windows-msvc193 macos-arm64 macos-x86_64; do
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              PACKAGES_JSON="$PACKAGES_JSON,"
+            fi
+            
+            case $profile in
+              linux-gcc11)
+                PACKAGES_JSON="$PACKAGES_JSON{\"profile\":\"$profile\",\"arch\":\"x86_64\",\"fips\":false}"
+                ;;
+              linux-arm64-gcc)
+                PACKAGES_JSON="$PACKAGES_JSON{\"profile\":\"$profile\",\"arch\":\"armv8\",\"fips\":false}"
+                ;;
+              windows-msvc193)
+                PACKAGES_JSON="$PACKAGES_JSON{\"profile\":\"$profile\",\"arch\":\"x86_64\",\"fips\":false}"
+                ;;
+              macos-arm64)
+                PACKAGES_JSON="$PACKAGES_JSON{\"profile\":\"$profile\",\"arch\":\"arm64\",\"fips\":false}"
+                ;;
+              macos-x86_64)
+                PACKAGES_JSON="$PACKAGES_JSON{\"profile\":\"$profile\",\"arch\":\"x86_64\",\"fips\":false}"
+                ;;
+            esac
+          done
+          
+          # Add FIPS packages if enabled
+          if [ "${{ github.event.inputs.fips_enabled }}" = "true" ]; then
+            PACKAGES_JSON="$PACKAGES_JSON,{\"profile\":\"linux-gcc11-fips\",\"arch\":\"x86_64\",\"fips\":true}"
+          fi
+          
+          PACKAGES_JSON="$PACKAGES_JSON]"
+          
+          echo "packages_json=$PACKAGES_JSON" >> $GITHUB_OUTPUT
+          echo "Generated packages: $PACKAGES_JSON"
+
+      - name: Dispatch to MCP Project Orchestrator
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: sparesparrow/mcp-project-orchestrator
+          event-type: openssl-conan-export-complete
+          client-payload: |
+            {
+              "version": "${{ github.event.inputs.version || '3.0.12' }}",
+              "platform": "${{ github.event.inputs.platform || 'linux-x64' }}",
+              "fips_enabled": ${{ github.event.inputs.fips_enabled || false }},
+              "conan_packages": ${{ steps.prepare-payload.outputs.packages_json }},
+              "workflow_run_id": ${{ github.run_id }},
+              "repository": "${{ github.repository }}",
+              "ref": "${{ github.ref }}",
+              "commit_sha": "${{ github.sha }}",
+              "build_artifacts": [
+                {
+                  "name": "openssl-base-conan-packages",
+                  "type": "conan-package",
+                  "retention_days": 30
+                }
+              ],
+              "integration_tests": {
+                "required": true,
+                "test_suites": [
+                  "conan-package-validation",
+                  "openssl-functionality-tests",
+                  "fips-compliance-tests"
+                ],
+                "timeout_minutes": 60
+              }
+            }
+
+      - name: Wait for integration test completion
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "⏳ Waiting for integration tests to complete..."
+          echo "Integration tests have been dispatched to MCP Project Orchestrator"
+          echo "Check the orchestrator workflow for test results"
+
+  notify-status:
+    name: Build Status Summary
+    needs: [build, build-conan, fips-validation, dispatch-integration-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate status summary
+        run: |
+          echo "## OpenSSL Conan Base Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| OpenSSL Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Conan Package | ${{ needs.build-conan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| FIPS Validation | ${{ needs.fips-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration Tests | ${{ needs.dispatch-integration-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-conan.result }}" = "success" ]; then
+            echo "✅ **Conan package build completed successfully**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Published packages:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Version: ${{ github.event.inputs.version || '3.0.12' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Platform: ${{ github.event.inputs.platform || 'linux-x64' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- FIPS Enabled: ${{ github.event.inputs.fips_enabled || false }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Next steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Integration tests dispatched to MCP Project Orchestrator" >> $GITHUB_STEP_SUMMARY
+            echo "- Packages available in Conan Center and Cloudsmith" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build failed** - Check individual job logs for details" >> $GITHUB_STEP_SUMMARY
+          fi

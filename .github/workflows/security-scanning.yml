@@ -1,0 +1,223 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CONAN_VERSION: "2.21.0"
+
+jobs:
+  sbom-generation:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant:
+          - general
+          - fips-government
+          - embedded
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Install openssl-tools
+        run: |
+          git clone https://github.com/sparesparrow/openssl-tools.git
+          cd openssl-tools
+          conan export . openssl-tools/1.2.0@
+          conan config install . -sf extensions -tf extensions
+
+      - name: Build package for SBOM
+        run: |
+          echo "🔨 Building package for SBOM generation..."
+          
+          # Select profile based on variant
+          case "${{ matrix.variant }}" in
+            "general")
+              PROFILE="linux-gcc11"
+              ;;
+            "fips-government")
+              PROFILE="linux-gcc11-fips"
+              ;;
+            "embedded")
+              PROFILE="linux-arm64-gcc"
+              ;;
+          esac
+          
+          # Build with full_deploy
+          conan install . \
+            --requires="openssl/3.0.12" \
+            --profile:all=profiles/$PROFILE \
+            --build=missing \
+            --deployer=full_deploy_enhanced \
+            --deployer-folder=./deploy
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./deploy/full_deploy/
+          format: cyclonedx-json
+          artifact-name: openssl-${{ matrix.variant }}.sbom.json
+          output: sbom-results
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.variant }}-${{ github.run_id }}
+          path: sbom-results/
+          retention-days: 30
+
+  trivy-cve-scan:
+    name: Trivy CVE Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant:
+          - general
+          - fips-government
+          - embedded
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Install openssl-tools
+        run: |
+          git clone https://github.com/sparesparrow/openssl-tools.git
+          cd openssl-tools
+          conan export . openssl-tools/1.2.0@
+          conan config install . -sf extensions -tf extensions
+
+      - name: Build package for scanning
+        run: |
+          echo "🔨 Building package for CVE scanning..."
+          
+          # Select profile based on variant
+          case "${{ matrix.variant }}" in
+            "general")
+              PROFILE="linux-gcc11"
+              ;;
+            "fips-government")
+              PROFILE="linux-gcc11-fips"
+              ;;
+            "embedded")
+              PROFILE="linux-arm64-gcc"
+              ;;
+          esac
+          
+          # Build with full_deploy
+          conan install . \
+            --requires="openssl/3.0.12" \
+            --profile:all=profiles/$PROFILE \
+            --build=missing \
+            --deployer=full_deploy_enhanced \
+            --deployer-folder=./deploy
+
+      - name: Trivy CVE Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: './deploy/full_deploy/'
+          format: 'sarif'
+          output: 'trivy-results-${{ matrix.variant }}.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results-${{ matrix.variant }}-${{ github.run_id }}
+          path: trivy-results-${{ matrix.variant }}.sarif
+          retention-days: 30
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results-${{ matrix.variant }}.sarif
+          category: trivy-${{ matrix.variant }}
+
+  security-gate:
+    name: Security Gate
+    needs: [sbom-generation, trivy-cve-scan]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download Trivy results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-results-*-${{ github.run_id }}
+          path: ./trivy-results/
+
+      - name: Check for critical vulnerabilities
+        run: |
+          echo "🔍 Checking for critical vulnerabilities..."
+          
+          CRITICAL_COUNT=0
+          HIGH_COUNT=0
+          
+          for sarif_file in ./trivy-results/*/trivy-results-*.sarif; do
+            if [ -f "$sarif_file" ]; then
+              echo "Analyzing $sarif_file..."
+              
+              # Count critical and high severity issues
+              CRITICAL=$(jq '.runs[0].results[] | select(.level == "error") | .ruleId' "$sarif_file" | wc -l)
+              HIGH=$(jq '.runs[0].results[] | select(.level == "warning") | .ruleId' "$sarif_file" | wc -l)
+              
+              CRITICAL_COUNT=$((CRITICAL_COUNT + CRITICAL))
+              HIGH_COUNT=$((HIGH_COUNT + HIGH))
+              
+              echo "  Critical: $CRITICAL, High: $HIGH"
+            fi
+          done
+          
+          echo "Total Critical: $CRITICAL_COUNT"
+          echo "Total High: $HIGH_COUNT"
+          
+          # Security gate: Fail if critical vulnerabilities found
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo "❌ SECURITY GATE FAILED: $CRITICAL_COUNT critical vulnerabilities found"
+            echo "::error::Security gate failed: $CRITICAL_COUNT critical vulnerabilities found"
+            exit 1
+          fi
+          
+          if [ "$HIGH_COUNT" -gt 5 ]; then
+            echo "⚠️ SECURITY WARNING: $HIGH_COUNT high severity vulnerabilities found (threshold: 5)"
+            echo "::warning::High number of high severity vulnerabilities: $HIGH_COUNT"
+          fi
+          
+          echo "✅ Security gate passed"
+
+      - name: Generate security summary
+        run: |
+          echo "## Security Scanning Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Variant | SBOM | CVE Scan |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| General | ${{ needs.sbom-generation.result }} | ${{ needs.trivy-cve-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| FIPS Government | ${{ needs.sbom-generation.result }} | ${{ needs.trivy-cve-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Embedded | ${{ needs.sbom-generation.result }} | ${{ needs.trivy-cve-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.trivy-cve-scan.result }}" = "success" ]; then
+            echo "✅ **Security scanning completed successfully**" >> $GITHUB_STEP_SUMMARY
+            echo "All variants scanned for vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            echo "SBOMs generated for supply chain transparency" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Security scanning failed** - Check individual job logs" >> $GITHUB_STEP_SUMMARY
+          fi

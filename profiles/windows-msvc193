@@ -6,12 +6,6 @@ compiler.version=193
 compiler.runtime=dynamic
 build_type=Release
 
-[options]
-openssl*:shared=True
-openssl*:enable_fips=True
-
 [conf]
-tools.cmake.cmaketoolchain:generator=Ninja
-
-
-
+tools.system.package_manager:mode=install
+tools.cmake.cmaketoolchain:generator=CMakeToolchain

@@ -16,6 +16,7 @@ class OpenSSLBaseConan(ConanFile):
     description = "Foundation: profiles, utilities, and Python runtime for OpenSSL ecosystem"
     license = "Apache-2.0"
     url = "https://github.com/sparesparrow/openssl-conan-base"
+    python_requires = "cpy/[>=1.0.0]"
     homepage = "https://github.com/sparesparrow/openssl-conan-base"
     topics = ("openssl", "foundation", "utilities", "profiles", "python")
 
@@ -41,6 +42,15 @@ class OpenSSLBaseConan(ConanFile):
             self.user = "sparesparrow"
             self.channel = "stable"  # Foundation packages are typically stable
 
+    def build(self):
+        # Use openssl-tools for build logic
+        tools = self.python_requires["openssl-tools"].module
+        if hasattr(tools, 'build_openssl_with_fips'):
+            tools.build_openssl_with_fips(self)
+        else:
+            # Fallback to standard build process
+            super().build()
+    
     def layout(self):
         """Define package layout for consistency"""
         basic_layout(self)

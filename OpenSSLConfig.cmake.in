@@ -1,0 +1,46 @@
+@PACKAGE_INIT@
+
+# OpenSSL FIPS DDD Configuration
+set(OPENSSL_FIPS @OPENSSL_FIPS@)
+set(OPENSSL_VERSION "@PROJECT_VERSION@")
+
+# Find dependencies
+include(CMakeFindDependencyMacro)
+
+# Set up imported targets
+include("${CMAKE_CURRENT_LIST_DIR}/OpenSSLTargets.cmake")
+
+# Check FIPS requirements
+if(OPENSSL_FIPS)
+    if(NOT @ENABLE_FIPS_MODULE@)
+        message(FATAL_ERROR "OpenSSL was built with FIPS support but FIPS module is not available")
+    endif()
+endif()
+
+# Set variables for consumers
+set(OPENSSL_FOUND TRUE)
+set(OPENSSL_INCLUDE_DIR "@CMAKE_INSTALL_PREFIX@/include")
+set(OPENSSL_LIBRARY_DIR "@CMAKE_INSTALL_PREFIX@/lib")
+
+# Check if we have the required components
+foreach(comp ${OpenSSL_FIND_COMPONENTS})
+    if(comp STREQUAL "Crypto")
+        if(NOT TARGET OpenSSL::Crypto)
+            set(OpenSSL_${comp}_FOUND FALSE)
+        endif()
+    elseif(comp STREQUAL "SSL")
+        if(NOT TARGET OpenSSL::SSL)
+            set(OpenSSL_${comp}_FOUND FALSE)
+        endif()
+    elseif(comp STREQUAL "FIPS")
+        if(NOT OPENSSL_FIPS OR NOT TARGET OpenSSL::FIPS)
+            set(OpenSSL_${comp}_FOUND FALSE)
+        endif()
+    else()
+        message(WARNING "Unknown OpenSSL component: ${comp}")
+        set(OpenSSL_${comp}_FOUND FALSE)
+    endif()
+endforeach()
+
+# Set overall found variable
+check_required_components(OpenSSL)

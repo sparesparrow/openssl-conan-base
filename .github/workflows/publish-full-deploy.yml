@@ -1,0 +1,89 @@
+name: Publish full_deploy bundles
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'conanfile.py'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
+  workflow_dispatch:
+
+jobs:
+  build-matrix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        build_type: [Release]
+        include:
+          - os: ubuntu-latest
+            triplet: linux-x86_64
+          - os: windows-latest
+            triplet: windows-x86_64
+          - os: macos-latest
+            triplet: macos-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan config install https://github.com/conan-io/conan-extensions.git
+
+    - name: Cache Conan data
+      uses: actions/cache@v3
+      with:
+        path: ~/.conan/data
+        key: conan-${{ matrix.os }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.py') }}
+
+    - name: Build full_deploy bundle
+      run: |
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          powershell -File scripts/conan/full_deploy.ps1 -BuildType ${{ matrix.build_type }} -OutputDir full_deploy
+        else
+          # Create shell script equivalent for Linux/macOS
+          chmod +x scripts/conan/full_deploy.sh 2>/dev/null || echo '#!/bin/bash\nconan install . --output-folder=full_deploy --build=missing --settings=build_type='${{ matrix.build_type }}' --deployer=full_deploy' > scripts/conan/full_deploy.sh
+          chmod +x scripts/conan/full_deploy.sh
+          scripts/conan/full_deploy.sh
+        fi
+
+    - name: Upload full_deploy artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: full_deploy-${{ matrix.triplet }}-${{ matrix.build_type }}
+        path: full_deploy.zip
+        retention-days: 30
+
+    - name: Publish to GitHub Releases
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        # Get latest tag or create one
+        TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+        gh release create ${TAG} --generate-notes || gh release edit ${TAG} --generate-notes
+        gh release upload ${TAG} full_deploy.zip#full-deploy-${{ matrix.triplet }}-${{ matrix.build_type }}.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload to Cloudsmith
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        # Install cloudsmith CLI and upload
+        pip install cloudsmith-cli
+        cloudsmith push raw --api-key ${{ secrets.CLOUDSMITH_API_KEY }} \
+          --owner ${{ secrets.CLOUDSMITH_OWNER }} \
+          --repository ${{ secrets.CLOUDSMITH_REPO }} \
+          --name full-deploy-${{ matrix.triplet }}-${{ matrix.build_type }}.zip \
+          --version $(git describe --tags --abbrev=0 || echo "1.0.0") \
+          full_deploy.zip
+      env:
+        CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        CLOUDSMITH_OWNER: ${{ secrets.CLOUDSMITH_OWNER }}
+        CLOUDSMITH_REPO: ${{ secrets.CLOUDSMITH_REPO }}

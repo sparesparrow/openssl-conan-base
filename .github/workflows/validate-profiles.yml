@@ -1,0 +1,201 @@
+name: Validate Conan Profiles
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CONAN_VERSION: "2.21.0"
+
+jobs:
+  validate-profiles:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile:
+          - linux-gcc11-fips
+          - linux-gcc11
+          - linux-arm64-gcc
+          - windows-msvc193
+          - windows-msvc193-shared
+          - macos-arm64
+          - macos-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Validate profile syntax
+        run: |
+          echo "🔍 Validating profile: ${{ matrix.profile }}"
+          
+          # Check if profile file exists
+          if [ ! -f "profiles/${{ matrix.profile }}" ]; then
+            echo "❌ Profile file not found: profiles/${{ matrix.profile }}"
+            exit 1
+          fi
+          
+          # Validate profile syntax
+          conan profile show profiles/${{ matrix.profile }}
+          
+          echo "✅ Profile ${{ matrix.profile }} is valid"
+
+      - name: Test profile with OpenSSL
+        if: matrix.profile == 'linux-gcc11-fips'
+        run: |
+          echo "🧪 Testing profile with OpenSSL build..."
+          
+          # Create a minimal test
+          mkdir -p test_build
+          cd test_build
+          
+          # Test profile with OpenSSL installation
+          conan install openssl/3.6.0@ \
+            --profile:all=../profiles/${{ matrix.profile }} \
+            --build=missing \
+            --output-folder=. \
+            --generator=CMakeDeps \
+            --generator=CMakeToolchain
+          
+          echo "✅ Profile ${{ matrix.profile }} works with OpenSSL"
+
+  validate-cross-platform:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            profile: linux-gcc11-fips
+          - os: windows-2022
+            profile: windows-msvc193
+          - os: macos-13
+            profile: macos-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Validate profile on target platform
+        run: |
+          echo "🔍 Validating profile ${{ matrix.profile }} on ${{ matrix.os }}"
+          
+          # Show detected profile
+          conan profile show default
+          
+          # Validate our custom profile
+          conan profile show profiles/${{ matrix.profile }}
+          
+          echo "✅ Profile ${{ matrix.profile }} is compatible with ${{ matrix.os }}"
+
+  generate-profile-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate profile matrix
+        id: set-matrix
+        run: |
+          # Generate matrix for downstream consumers
+          PROFILES=$(find profiles -name "*.profile" -o -name "linux-*" -o -name "windows-*" -o -name "macos-*" | sort)
+          
+          MATRIX="{\"include\":["
+          FIRST=true
+          
+          for profile in $PROFILES; do
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              MATRIX="$MATRIX,"
+            fi
+            
+            PROFILE_NAME=$(basename "$profile")
+            MATRIX="$MATRIX{\"profile\":\"$PROFILE_NAME\"}"
+          done
+          
+          MATRIX="$MATRIX]}"
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Generated matrix: $MATRIX"
+
+  validate-downstream-compatibility:
+    needs: generate-profile-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.generate-profile-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Conan
+        run: |
+          pip install conan==${{ env.CONAN_VERSION }}
+          conan profile detect --force
+
+      - name: Test downstream compatibility
+        run: |
+          echo "🔍 Testing downstream compatibility for profile: ${{ matrix.profile }}"
+          
+          # Simulate downstream usage
+          conan install openssl/3.6.0@ \
+            --profile:all=profiles/${{ matrix.profile }} \
+            --build=missing \
+            --output-folder=test_output \
+            --generator=CMakeDeps
+          
+          echo "✅ Profile ${{ matrix.profile }} is compatible for downstream usage"
+
+  profile-documentation:
+    runs-on: ubuntu-latest
+    needs: [validate-profiles, validate-cross-platform, validate-downstream-compatibility]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate profile documentation
+        run: |
+          echo "📚 Validating profile documentation..."
+          
+          # Check if documentation exists
+          if [ ! -f "docs/profiles.md" ]; then
+            echo "❌ Profile documentation not found"
+            exit 1
+          fi
+          
+          # Check if all profiles are documented
+          DOCUMENTED_PROFILES=$(grep -o '`[^`]*`' docs/profiles.md | grep -E '^(linux-|windows-|macos-)' | sed 's/`//g' | sort)
+          ACTUAL_PROFILES=$(find profiles -type f | xargs basename -a | sort)
+          
+          echo "Documented profiles:"
+          echo "$DOCUMENTED_PROFILES"
+          echo ""
+          echo "Actual profiles:"
+          echo "$ACTUAL_PROFILES"
+          
+          # Check if all profiles are documented
+          for profile in $ACTUAL_PROFILES; do
+            if ! echo "$DOCUMENTED_PROFILES" | grep -q "^$profile$"; then
+              echo "❌ Profile $profile is not documented"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All profiles are properly documented"
